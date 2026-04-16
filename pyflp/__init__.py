@@ -117,6 +117,7 @@ def parse(file: pathlib.Path | str) -> Project:
 
     plug_name = None
     str_type: type[AsciiEvent] | type[UnicodeEvent] | None = None
+    fl_major = 0  # filled in when the FLVersion event is seen (usually first).
     stream.seek(22)  # Back to start of events
     while stream.tell() < file_size:
         event_type: type[AnyEvent] | None = None
@@ -134,7 +135,9 @@ def parse(file: pathlib.Path | str) -> Project:
 
         if id == ProjectID.FLVersion:
             parts = value.decode("ascii").rstrip("\0").split(".")
-            if [int(part) for part in parts][0:2] >= [11, 5]:
+            version_nums = [int(part) for part in parts]
+            fl_major = version_nums[0]
+            if version_nums[0:2] >= [11, 5]:
                 str_type = UnicodeEvent
             else:
                 str_type = AsciiEvent
@@ -152,12 +155,24 @@ def parse(file: pathlib.Path | str) -> Project:
             elif id < TEXT:
                 event_type = U32Event
             elif id < DATA or id.value in NEW_TEXT_IDS:
-                if str_type is None:  # pragma: no cover
-                    raise VersionNotDetected  # ! This should never happen
-                event_type = str_type
+                # FL-version-conditioned override: opcode 0xC0 was
+                # ChannelID._Name (deprecated UTF-16 channel name) up
+                # through FL 24. In FL 25+ it carries a compound
+                # project-properties blob that is NOT UTF-16, and decoding
+                # it as a string raises construct.StringError and aborts
+                # the whole parse. Fall back to UnknownDataEvent for FL 25+
+                # so the rest of the file still loads; callers who need
+                # the decoded contents can layer on a proper event model
+                # when available. Older FL versions keep the string path.
+                if fl_major >= 25 and id.value == 0xC0:
+                    event_type = UnknownDataEvent
+                else:
+                    if str_type is None:  # pragma: no cover
+                        raise VersionNotDetected  # ! This should never happen
+                    event_type = str_type
 
-                if id == PluginID.InternalName:
-                    plug_name = event_type(id, value).value
+                    if id == PluginID.InternalName:
+                        plug_name = event_type(id, value).value
             elif id == PluginID.Data and plug_name is not None:
                 event_type = get_event_by_internal_name(plug_name)
             else:
