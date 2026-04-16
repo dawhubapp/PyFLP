@@ -54,9 +54,23 @@ from pyflp._events import (
     UnicodeEvent,
     UnknownDataEvent,
 )
+from pyflp._fl25_overrides import FL25_OVERRIDES
 from pyflp.exceptions import HeaderCorrupted, VersionNotDetected
 from pyflp.plugin import PluginID, get_event_by_internal_name
 from pyflp.project import VALID_PPQS, FileFormat, Project, ProjectID
+
+# Name -> class mapping used when an FL25 override pins a specific
+# event class. Kept here rather than in _fl25_overrides.py to avoid
+# a circular import (events module wants to import override table
+# eventually).
+_FL25_EVENT_CLASSES: dict[str, type[AnyEvent]] = {
+    "U8Event": U8Event,
+    "U16Event": U16Event,
+    "U32Event": U32Event,
+    "AsciiEvent": AsciiEvent,
+    "UnicodeEvent": UnicodeEvent,
+    "UnknownDataEvent": UnknownDataEvent,
+}
 
 __all__ = ["parse", "save"]
 
@@ -123,7 +137,37 @@ def parse(file: pathlib.Path | str) -> Project:
         event_type: type[AnyEvent] | None = None
         id = EventEnum(int.from_bytes(stream.read(1), "little"))
 
-        if id < WORD:
+        # FL 25+ size override: a handful of opcodes don't follow the
+        # classic BYTE/WORD/DWORD/DATA range rules (see
+        # pyflp/_fl25_overrides.py). When the header already told us
+        # this is FL 25+ AND the opcode has an override, use the
+        # override's size rule to read the payload; otherwise fall
+        # back to the range-based rule.
+        override = FL25_OVERRIDES.get(id.value) if fl_major >= 25 else None
+        if override is not None:
+            if override.size_rule == "byte":
+                value = stream.read(1)
+            elif override.size_rule == "word":
+                value = stream.read(2)
+            elif override.size_rule == "dword":
+                value = stream.read(4)
+            elif override.size_rule == "utf16_zterm":
+                # Null-terminated UTF-16-LE. Read 2-byte code units
+                # until we see 00 00 at an even offset. Hard cap at
+                # 4096 bytes to avoid runaway reads on malformed data.
+                chunks: list[bytes] = []
+                for _ in range(4096 // 2):
+                    cu = stream.read(2)
+                    if len(cu) != 2:  # truncated
+                        break
+                    chunks.append(cu)
+                    if cu == b"\x00\x00":
+                        break
+                value = b"".join(chunks)
+            else:  # "data"
+                size = c.VarInt.parse_stream(stream)
+                value = stream.read(size)
+        elif id < WORD:
             value = stream.read(1)
         elif id < DWORD:
             value = stream.read(2)
@@ -142,41 +186,34 @@ def parse(file: pathlib.Path | str) -> Project:
             else:
                 str_type = AsciiEvent
 
-        for enum_ in EventEnum.__subclasses__():
-            if id in enum_:
-                event_type = getattr(enum_(id), "type")
-                break
+        # FL 25 override can also pin the event-class; if so, skip the
+        # per-subclass lookup and range-based fallback entirely.
+        if override is not None and override.event_class_name is not None:
+            event_type = _FL25_EVENT_CLASSES[override.event_class_name]
+        else:
+            for enum_ in EventEnum.__subclasses__():
+                if id in enum_:
+                    event_type = getattr(enum_(id), "type")
+                    break
 
-        if event_type is None:
-            if id < WORD:
-                event_type = U8Event
-            elif id < DWORD:
-                event_type = U16Event
-            elif id < TEXT:
-                event_type = U32Event
-            elif id < DATA or id.value in NEW_TEXT_IDS:
-                # FL-version-conditioned override: opcode 0xC0 was
-                # ChannelID._Name (deprecated UTF-16 channel name) up
-                # through FL 24. In FL 25+ it carries a compound
-                # project-properties blob that is NOT UTF-16, and decoding
-                # it as a string raises construct.StringError and aborts
-                # the whole parse. Fall back to UnknownDataEvent for FL 25+
-                # so the rest of the file still loads; callers who need
-                # the decoded contents can layer on a proper event model
-                # when available. Older FL versions keep the string path.
-                if fl_major >= 25 and id.value == 0xC0:
-                    event_type = UnknownDataEvent
-                else:
+            if event_type is None:
+                if id < WORD:
+                    event_type = U8Event
+                elif id < DWORD:
+                    event_type = U16Event
+                elif id < TEXT:
+                    event_type = U32Event
+                elif id < DATA or id.value in NEW_TEXT_IDS:
                     if str_type is None:  # pragma: no cover
                         raise VersionNotDetected  # ! This should never happen
                     event_type = str_type
 
                     if id == PluginID.InternalName:
                         plug_name = event_type(id, value).value
-            elif id == PluginID.Data and plug_name is not None:
-                event_type = get_event_by_internal_name(plug_name)
-            else:
-                event_type = UnknownDataEvent
+                elif id == PluginID.Data and plug_name is not None:
+                    event_type = get_event_by_internal_name(plug_name)
+                else:
+                    event_type = UnknownDataEvent
 
         events.append(event_type(id, value))
 

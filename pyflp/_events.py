@@ -123,7 +123,17 @@ class EventBase(Generic[T]):
         if self.ALLOWED_IDS and id not in self.ALLOWED_IDS:
             raise EventIDOutOfRange(id, *self.ALLOWED_IDS)
 
-        if id < TEXT:
+        # FL 25+ reuses some opcodes with non-standard payload sizes
+        # (see :mod:`pyflp._fl25_overrides`). When an opcode has an
+        # explicit override, the parser has already read the right
+        # number of bytes; skip the range-based size check here. A
+        # lazy import avoids a circular dependency — the overrides
+        # module has no runtime deps on this one.
+        from pyflp._fl25_overrides import FL25_OVERRIDES
+
+        has_override = id.value in FL25_OVERRIDES
+
+        if id < TEXT and not has_override:
             if id < WORD:
                 expected_size = 1
             elif id < DWORD:
