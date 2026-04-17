@@ -338,14 +338,36 @@ class AsciiEvent(StrEventBase):
         )
 
 
+def _utf16_le_lenient_decode(data: bytes) -> str:
+    """UTF-16-LE decode that tolerates orphan surrogates.
+
+    FL 25 saves occasionally produce strings with orphan high-surrogate
+    code units (``\\uD83D`` followed by a byte that doesn't form a valid
+    low-surrogate pair). Python's strict ``utf-16-le`` codec raises on
+    these; the ``surrogatepass`` error handler preserves them as
+    codepoints so downstream code (which just stores/displays the
+    string) keeps working. Round-trip re-encoding with the same handler
+    is lossless.
+    """
+    return data.decode("utf-16-le", errors="surrogatepass")
+
+
+def _utf16_le_lenient_encode(text: str) -> bytes:
+    return text.encode("utf-16-le", errors="surrogatepass")
+
+
 class UnicodeEvent(StrEventBase):
     if TYPE_CHECKING:
         STRUCT: c.ExprAdapter[str, str, str, str]
     else:
+        # Use GreedyBytes + an ExprAdapter so we can route encode/decode
+        # through our lenient codec wrapper. The stock GreedyString
+        # uses construct's strict StringEncoded which raises on orphan
+        # surrogates.
         STRUCT = c.ExprAdapter(
-            c.GreedyString("utf-16-le"),
-            lambda obj, *_: obj.rstrip("\0"),
-            lambda obj, *_: obj + "\0",
+            c.GreedyBytes,
+            lambda obj, *_: _utf16_le_lenient_decode(obj).rstrip("\0"),
+            lambda obj, *_: _utf16_le_lenient_encode(obj + "\0"),
         )
 
 
@@ -398,6 +420,12 @@ class ListEventBase(EventBase[AnyListContainer], AnyList):
                 f"Cannot parse event {id} as event size {len(data)} "
                 f"is not a multiple of struct size(s) {self.SIZES}"
             )
+            # Fall back to an empty item list so downstream `__iter__` /
+            # `__getitem__` don't crash with AttributeError on the missing
+            # `.data`. FL 25 saves the PlaylistEvent at sizes not in
+            # PyFLP's known SIZES — we'd rather lose that arrangement's
+            # clip list than abort the whole parse.
+            self.data = []
         else:
             self.data = self.value  # Akin to UserList.__init__
 
