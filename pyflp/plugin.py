@@ -325,6 +325,7 @@ class VSTPluginEvent(StructEventBase):
     # VSTPluginEvent serialization format.
     #
     # Markers seen in the wild (FL version → marker):
+    #   FL 9      → 6  (4frontpiano, TheCastle_19, ambience et al.)
     #   FL 12-20  → 8 and/or 10 (upstream baseline — documented in
     #               PyFLP's original comment on line 288)
     #   FL 20.5   → 9  (phlegma_dogs)
@@ -333,7 +334,7 @@ class VSTPluginEvent(StructEventBase):
     #   FL 25.2   → 12 (base_one_serum)
     #
     # See docs/pyflp-evaluation.md "Fork patches" for context.
-    _KNOWN_VST_TYPE_MARKERS = (8, 9, 10, 11, 12)
+    _KNOWN_VST_TYPE_MARKERS = (6, 8, 9, 10, 11, 12)
 
     def __init__(self, id: Any, data: bytearray) -> None:
         if data[0] not in self._KNOWN_VST_TYPE_MARKERS:
