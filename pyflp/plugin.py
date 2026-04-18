@@ -312,8 +312,21 @@ class VSTPluginEvent(StructEventBase):
         ),
     ).compile()
 
+    # flpdiff fork: widened allowlist based on real-corpus evidence.
+    # PyFLP's STRUCT parses the payload fine regardless of the marker
+    # byte (it's just stored as `type` and never used to branch), so
+    # the warning was purely noisy for valid-but-uncatalogued VSTs.
+    # Markers seen in the wild:
+    #   8  — VST2 (most common)
+    #   9  — Sylenth1 (LennarDigital, VST2 variant)
+    #  10  — VST3
+    #  12  — Serum (Xfer Records, VST2/VST3 — seen in
+    #         tests/corpus/re_base/fl25/base_one_serum.flp)
+    # See docs/pyflp-evaluation.md "Fork patches" for context.
+    _KNOWN_VST_TYPE_MARKERS = (8, 9, 10, 12)
+
     def __init__(self, id: Any, data: bytearray) -> None:
-        if data[0] not in (8, 10):
+        if data[0] not in self._KNOWN_VST_TYPE_MARKERS:
             warnings.warn(
                 f"VSTPluginEvent: Unknown marker {data[0]} detected. "
                 "Open an issue at https://github.com/demberto/PyFLP/issues "
