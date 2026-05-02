@@ -151,19 +151,9 @@ def parse(file: pathlib.Path | str) -> Project:
                 value = stream.read(2)
             elif override.size_rule == "dword":
                 value = stream.read(4)
-            elif override.size_rule == "utf16_zterm":
-                # Null-terminated UTF-16-LE. Read 2-byte code units
-                # until we see 00 00 at an even offset. Hard cap at
-                # 4096 bytes to avoid runaway reads on malformed data.
-                chunks: list[bytes] = []
-                for _ in range(4096 // 2):
-                    cu = stream.read(2)
-                    if len(cu) != 2:  # truncated
-                        break
-                    chunks.append(cu)
-                    if cu == b"\x00\x00":
-                        break
-                value = b"".join(chunks)
+            elif override.size_rule == "byte3":
+                # Fixed 3-byte payload, no size prefix.
+                value = stream.read(3)
             else:  # "data"
                 size = c.VarInt.parse_stream(stream)
                 value = stream.read(size)
